@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pixel Platformer</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#101827; color:#f8fafc; font-family:system-ui,Segoe UI,Arial,sans-serif; display:flex; min-height:100vh; align-items:center; justify-content:center; padding:16px; }
+  .wrap { width:min(100%, 980px); }
+  h1 { margin:0 0 8px; font-size:clamp(22px,4vw,34px); }
+  .sub { color:#cbd5e1; margin:0 0 12px; }
+  canvas { width:100%; height:auto; display:block; background:#55b8ff; border:3px solid #e2e8f0; border-radius:10px; image-rendering:pixelated; box-shadow:0 16px 40px #0007; }
+  .hud { display:flex; flex-wrap:wrap; gap:10px; justify-content:space-between; margin:10px 0; align-items:center; }
+  .pill { background:#1e293b; border:1px solid #475569; border-radius:999px; padding:7px 12px; }
+  button { cursor:pointer; color:white; background:#2563eb; border:0; border-radius:9px; padding:10px 14px; font-weight:700; }
+  button:hover { background:#1d4ed8; }
+  .help { color:#cbd5e1; line-height:1.5; font-size:14px; }
+  .touch { display:none; gap:10px; justify-content:space-between; margin-top:10px; user-select:none; }
+  .touch button { flex:1; font-size:20px; padding:14px 8px; touch-action:none; }
+  @media (pointer:coarse) { .touch { display:flex; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🌟 Pixel Platformer</h1>
+  <p class="sub">Collect every coin, dodge spikes, stomp enemies, and reach the flag!</p>
+  <canvas id="game" width="960" height="540" aria-label="Playable 2D platformer"></canvas>
+  <div class="hud">
+    <div class="pill">🪙 Coins: <b id="coins">0</b>/<b id="total">0</b></div>
+    <div class="pill">❤️ Lives: <b id="lives">3</b></div>
+    <div class="pill" id="status">Reach the red flag!</div>
+    <button id="restart">Restart level ↻</button>
+  </div>
+  <div class="touch">
+    <button data-key="left">◀</button><button data-key="jump">JUMP ▲</button><button data-key="right">▶</button>
+  </div>
+  <p class="help"><b>Controls:</b> Move with A/D or ←/→. Jump with W, ↑, or SPACE. You can also use the touch buttons on mobile. Land on enemies from above to defeat them; touching enemies or spikes costs a life.</p>
+</div>
+<script>
+(() => {
+const canvas = document.getElementById('game'), ctx = canvas.getContext('2d');
+const W=canvas.width,H=canvas.height, gravity=0.62;
+const ui={coins:document.getElementById('coins'),total:document.getElementById('total'),lives:document.getElementById('lives'),status:document.getElementById('status')};
+const keys={left:false,right:false,jump:false};
+let player, platforms, spikes, coins, enemies, camera, lives, collected, won, gameOver, jumpLatch, invuln, tick;
+function makeLevel(){
+  platforms=[
+    {x:0,y:470,w:430,h:70},{x:500,y:470,w:180,h:70},
+    {x:735,y:410,w:170,h:130},{x:970,y:350,w:150,h:190},
+    {x:1190,y:430,w:210,h:110},{x:1480,y:370,w:180,h:170},
+    {x:1740,y:450,w:260,h:90},{x:2070,y:390,w:190,h:150},
+    {x:2330,y:450,w:330,h:90}
+  ];
+  spikes=[{x:430,y:470,w:70,h:70},{x:680,y:470,w:55,h:70},{x:905,y:410,w:65,h:130},{x:1120,y:350,w:70,h:190},{x:1400,y:430,w:80,h:110},{x:1660,y:370,w:80,h:170},{x:2000,y:450,w:70,h:90},{x:2260,y:390,w:70,h:150}];
+  coins=[];
+  const coinRows=[
+    [150,385,4],[300,330,3],[550,385,3],[770,335,3],[1010,275,3],
+    [1220,355,4],[1510,295,3],[1770,375,4],[2100,315,3],[2370,375,5]
+  ];
+  coinRows.forEach(([x,y,n])=>{for(let i=0;i<n;i++)coins.push({x:x+i*32,y,got:false,phase:Math.random()*6});});
+  enemies=[
+    {x:250,y:438,min:180,max:380,vx:1.2,alive:true},
+    {x:790,y:378,min:750,max:875,vx:1.4,alive:true},
+    {x:1245,y:398,min:1205,max:1360,vx:1.3,alive:true},
+    {x:1780,y:418,min:1750,max:1970,vx:1.5,alive:true},
+    {x:2390,y:418,min:2350,max:2600,vx:1.7,alive:true}
+  ];
+}
+function reset(full=true){
+  if(full){lives=3;collected=0;won=false;gameOver=false;makeLevel();}
+  player={x:60,y:390,w:30,h:42,vx:0,vy:0,onGround:false,face:1};
+  camera=0;invuln=0;tick=0;jumpLatch=false;
+  updateUI();
+}
+function updateUI(){
+ ui.coins.textContent=collected;ui.total.textContent=coins.length;ui.lives.textContent=lives;
+ ui.status.textContent=won?'🎉 You won! Level complete!':gameOver?'Game over — press Restart':'Reach the red flag!';
+}
+function rectHit(a,b){return a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y;}
+function hurt(){
+ if(invuln>0||won||gameOver)return;
+ lives--; if(lives<=0){gameOver=true;} else {player.x=Math.max(40,player.x-90);player.y=330;player.vx=0;player.vy=0;invuln=100;}
+ updateUI();
+}
+function update(){
+ if(won||gameOver)return;
+ tick++;
+ const speed=3.5;
+ player.vx=(keys.right?speed:0)-(keys.left?speed:0);
+ if(player.vx)player.face=Math.sign(player.vx);
+ if(keys.jump&&!jumpLatch&&player.onGround){player.vy=-12.4;player.onGround=false;}
+ jumpLatch=keys.jump;
+ player.vy=Math.min(player.vy+gravity,14);
+ player.x+=player.vx;
+ for(const p of platforms){if(rectHit(player,p)){if(player.vx>0)player.x=p.x-player.w;else if(player.vx<0)player.x=p.x+p.w;}}
+ player.y+=player.vy;player.onGround=false;
+ for(const p of platforms){if(rectHit(player,p)){if(player.vy>0){player.y=p.y-player.h;player.vy=0;player.onGround=true;}else if(player.vy<0){player.y=p.y+p.h;player.vy=0;}}}
+ if(player.y>H+100)hurt();
+ // Coins
+ for(const c of coins){if(!c.got&&rectHit(player,{x:c.x-10,y:c.y-10,w:20,h:20})){c.got=true;collected++;updateUI();}}
+ // Enemies: stomp from above, otherwise hurt
+ for(const e of enemies){if(!e.alive)continue;
+   e.x+=e.vx;if(e.x<e.min||e.x+30>e.max)e.vx*=-1;
+   const er={x:e.x,y:e.y,w:30,h:30};
+   if(rectHit(player,er)){
+     if(player.vy>1&&player.y+player.h-er.y<20){e.alive=false;player.vy=-8;}
+     else hurt();
+   }
+ }
+ // spikes are triangular, collision uses conservative rectangle
+ for(const s of spikes){if(rectHit(player,{x:s.x+5,y:s.y+12,w:s.w-10,h:s.h-12}))hurt();}
+ if(player.x<0)player.x=0;
+ if(player.x+player.w>2630&&player.y<450){won=true;updateUI();}
+ camera=Math.max(0,Math.min(2630-W,player.x-W*0.35));
+ if(invuln>0)invuln--;
+}
+function draw(){
+ ctx.clearRect(0,0,W,H);
+ // sky and parallax hills
+ const sky=ctx.createLinearGradient(0,0,0,H);sky.addColorStop(0,'#37a7ff');sky.addColorStop(1,'#c5f0ff');ctx.fillStyle=sky;ctx.fillRect(0,0,W,H);
+ ctx.fillStyle='#70c6dc';
+ for(let i=0;i<9;i++){let x=((i*180-camera*.22)%1500+1500)%1500-100;ctx.beginPath();ctx.moveTo(x,410);ctx.lineTo(x+100,230+(i%3)*35);ctx.lineTo(x+220,410);ctx.fill();}
+ // clouds
+ for(let i=0;i<7;i++){let x=((i*230-camera*.12)%1100+1100)%1100-80,y=70+(i%3)*45;ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(x,y,22,0,Math.PI*2);ctx.arc(x+25,y-10,28,0,Math.PI*2);ctx.arc(x+55,y,22,0,Math.PI*2);ctx.fill();}
+ ctx.save();ctx.translate(-camera,0);
+ // platforms
+ for(const p of platforms){ctx.fillStyle='#8b4b2b';ctx.fillRect(p.x,p.y,p.w,p.h);ctx.fillStyle='#38b94c';ctx.fillRect(p.x,p.y,p.w,13);ctx.fillStyle='#7be35b';for(let x=p.x;x<p.x+p.w;x+=22)ctx.fillRect(x,p.y+8,12,5);ctx.fillStyle='#60351f';for(let x=p.x+8;x<p.x+p.w;x+=38)ctx.fillRect(x,p.y+27,18,8);}
+ // spikes
+ for(const s of spikes){ctx.fillStyle='#475569';ctx.fillRect(s.x,s.y+35,s.w,s.h-35);for(let x=s.x;x<s.x+s.w;x+=18){ctx.fillStyle='#e5f3ff';ctx.beginPath();ctx.moveTo(x,s.y+s.h);ctx.lineTo(x+9,s.y+5);ctx.lineTo(x+18,s.y+s.h);ctx.fill();ctx.strokeStyle='#94a3b8';ctx.stroke();}}
+ // coins
+ for(const c of coins){if(c.got)continue;let bob=Math.sin(tick*.1+c.phase)*4;ctx.fillStyle='#f59e0b';ctx.beginPath();ctx.ellipse(c.x,c.y+bob,10,14,0,0,Math.PI*2);ctx.fill();ctx.fillStyle='#fde047';ctx.beginPath();ctx.ellipse(c.x-2,c.y+bob,5,10,0,0,Math.PI*2);ctx.fill();}
+ // enemies
+ for(const e of enemies){if(!e.alive)continue;ctx.fillStyle='#7c3f24';ctx.fillRect(e.x,e.y+7,30,23);ctx.fillStyle='#a65b35';ctx.fillRect(e.x+3,e.y,24,18);ctx.fillStyle='#fff';ctx.fillRect(e.x+6,e.y+8,6,7);ctx.fillRect(e.x+19,e.y+8,6,7);ctx.fillStyle='#111827';ctx.fillRect(e.x+9,e.y+10,3,5);ctx.fillRect(e.x+21,e.y+10,3,5);ctx.fillStyle='#3b241a';ctx.fillRect(e.x+3,e.y+27,8,3);ctx.fillRect(e.x+20,e.y+27,8,3);}
+ // question blocks
+ for(const x of [180,220,260,1000,1040,1540,1580,2120]){ctx.fillStyle='#b96a2e';ctx.fillRect(x,245,34,34);ctx.fillStyle='#fbbf24';ctx.fillRect(x+3,248,28,28);ctx.fillStyle='#fff7c2';ctx.font='bold 25px monospace';ctx.fillText('?',x+8,273);}
+ // finish flag
+ ctx.fillStyle='#e5e7eb';ctx.fillRect(2630,300,7,150);ctx.fillStyle='#ef4444';ctx.beginPath();ctx.moveTo(2637,302);ctx.lineTo(2690,320);ctx.lineTo(2637,341);ctx.fill();
+ // player blink when invulnerable
+ if(invuln===0||Math.floor(invuln/6)%2===0){
+   ctx.fillStyle='#5b341f';ctx.fillRect(player.x+4,player.y,23,13);ctx.fillRect(player.x+1,player.y+8,8,10);
+   ctx.fillStyle='#f2bd8e';ctx.fillRect(player.x+5,player.y+11,21,15);ctx.fillStyle='#111827';ctx.fillRect(player.x+(player.face>0?20:8),player.y+17,4,5);
+   ctx.fillStyle='#ef4444';ctx.fillRect(player.x+2,player.y+26,27,9);ctx.fillStyle='#2563eb';ctx.fillRect(player.x+5,player.y+34,21,8);
+   ctx.fillStyle='#1f2937';ctx.fillRect(player.x+3,player.y+40,10,4);ctx.fillRect(player.x+19,player.y+40,10,4);
+ }
+ ctx.restore();
+ if(won||gameOver){ctx.fillStyle='#0f172acc';ctx.fillRect(0,0,W,H);ctx.textAlign='center';ctx.fillStyle='#fff';ctx.font='bold 42px system-ui';ctx.fillText(won?'LEVEL COMPLETE!':'GAME OVER',W/2,H/2-10);ctx.font='20px system-ui';ctx.fillText(won?'You collected '+collected+' coins!':'Press Restart to try again',W/2,H/2+32);ctx.textAlign='left';}
+}
+function loop(){update();draw();requestAnimationFrame(loop);}
+function setKey(k,v){if(k==='left')keys.left=v;if(k==='right')keys.right=v;if(k==='jump')keys.jump=v;}
+document.addEventListener('keydown',e=>{const k=e.key.toLowerCase();if(['arrowleft','arrowright','arrowup',' ','w','a','d'].includes(k))e.preventDefault();if(k==='arrowleft'||k==='a')setKey('left',true);if(k==='arrowright'||k==='d')setKey('right',true);if(k==='arrowup'||k==='w'||k===' ')setKey('jump',true);});
+document.addEventListener('keyup',e=>{const k=e.key.toLowerCase();if(k==='arrowleft'||k==='a')setKey('left',false);if(k==='arrowright'||k==='d')setKey('right',false);if(k==='arrowup'||k==='w'||k===' ')setKey('jump',false);});
+document.querySelectorAll('[data-key]').forEach(b=>{const k=b.dataset.key;b.addEventListener('pointerdown',e=>{e.preventDefault();setKey(k,true);b.setPointerCapture(e.pointerId);});for(const ev of ['pointerup','pointercancel','lostpointercapture'])b.addEventListener(ev,()=>setKey(k,false));});
+document.getElementById('restart').addEventListener('click',()=>reset(true));
+reset(true);loop();
+})();
+</script>
+</body>
+</html>
